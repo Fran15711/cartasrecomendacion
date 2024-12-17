@@ -1,28 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Viewer</title>
+    <title>Visor de PDF</title>
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background-color: #f0f0f0;
-        }
-
         #pdf-container {
             width: 100%;
-            background-color: #f0f0f0;
+            height: 100vh; /* Usar toda la altura de la ventana */
+            overflow-y: scroll; /* Activar desplazamiento */
+            margin: 0;
+            padding: 0;
+            background-color: #f0f0f0; /* Fondo para distinguir el PDF */
+            position: relative;
         }
 
         canvas {
             display: block;
-            margin: 20px auto;
-            background-color: white;
+            margin: 20px auto; /* Separación entre páginas */
+            background: white;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-            width: 100%; /* Ancho completo */
-            height: auto; /* Proporciones automáticas */
+            max-width: 100%; /* Ajuste al ancho de la ventana */
+            height: auto; /* Mantener la proporción del PDF */
         }
     </style>
 </head>
@@ -31,55 +30,98 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
     <script>
+        const url = 'https://raw.githubusercontent.com/Fran15711/cartasrecomendacion/main/Carta%20Recomendacion.pdf';
         const container = document.getElementById('pdf-container');
-        const url = 'https://raw.githubusercontent.com/Fran15711/cartasrecomendacion/main/Carta%20Recomendacion.pdf'; // URL del PDF
+        const pageCache = {}; // Cache para las páginas renderizadas
+        const visibleThreshold = 300; // Distancia en píxeles para cargar anticipadamente
 
         let pdfDoc = null;
+        let isRendering = false; // Bandera para evitar conflictos de renderizado
 
-        // Obtener la escala de cada página según el ancho del contenedor
-        const getScale = (page) => {
-            return container.offsetWidth / page.getViewport({ scale: 1 }).width;
+        // Renderiza una página específica
+        const renderPage = async (pageNumber, scale) => {
+            if (pageCache[pageNumber]) return; // Si ya está en cache, no renderizar de nuevo
+
+            const page = await pdfDoc.getPage(pageNumber);
+            const viewport = page.getViewport({ scale });
+
+            // Crear el canvas
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+
+            // Ajustar el tamaño del canvas para alta resolución
+            canvas.width = viewport.width * window.devicePixelRatio;
+            canvas.height = viewport.height * window.devicePixelRatio;
+            canvas.style.width = `${viewport.width}px`;
+            canvas.style.height = `${viewport.height}px`;
+
+            context.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+            // Renderizar la página
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            // Guardar el canvas en el contenedor y la cache
+            pageCache[pageNumber] = canvas;
+            container.appendChild(canvas);
         };
 
-        // Renderizar TODAS las páginas del PDF
-        const renderAllPages = async () => {
+        // Verifica qué páginas están visibles
+        const getVisiblePages = () => {
+            const containerTop = container.scrollTop;
+            const containerBottom = containerTop + container.offsetHeight;
+
+            const visiblePages = [];
+            let currentHeight = 0;
+
             for (let pageNumber = 1; pageNumber <= pdfDoc.numPages; pageNumber++) {
-                const page = await pdfDoc.getPage(pageNumber);
-                const scale = getScale(page);
-                const viewport = page.getViewport({ scale });
+                const pageHeight = pageCache[pageNumber]?.clientHeight || 1000; // Altura aproximada si no está renderizado
 
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
+                if (
+                    (currentHeight + pageHeight >= containerTop - visibleThreshold) &&
+                    (currentHeight <= containerBottom + visibleThreshold)
+                ) {
+                    visiblePages.push(pageNumber);
+                }
 
-                // Configurar el tamaño del canvas según la densidad de píxeles
-                const outputScale = window.devicePixelRatio || 1;
-                canvas.width = Math.floor(viewport.width * outputScale);
-                canvas.height = Math.floor(viewport.height * outputScale);
-                canvas.style.width = `${viewport.width}px`;
-                canvas.style.height = `${viewport.height}px`;
-
-                context.scale(outputScale, outputScale);
-
-                // Renderizar la página en el canvas
-                await page.render({ canvasContext: context, viewport }).promise;
-
-                // Agregar la página renderizada al contenedor
-                container.appendChild(canvas);
+                currentHeight += pageHeight + 20; // Separación entre páginas
             }
+
+            return visiblePages;
         };
 
-        // Cargar el PDF
-        const loadPDF = async () => {
-            try {
-                pdfDoc = await pdfjsLib.getDocument(url).promise;
-                renderAllPages();
-            } catch (error) {
-                console.error('Error al cargar el PDF:', error);
+        // Renderiza las páginas visibles de forma progresiva
+        const renderVisiblePages = async () => {
+            if (isRendering) return; // Evitar renderizado simultáneo
+            isRendering = true;
+
+            const visiblePages = getVisiblePages();
+
+            // Usar DocumentFragment para evitar interrupciones
+            const fragment = document.createDocumentFragment();
+            for (const pageNumber of visiblePages) {
+                if (!pageCache[pageNumber]) {
+                    const scale = container.offsetWidth / 800; // Escalado dinámico según el ancho de la pantalla
+                    await renderPage(pageNumber, scale);
+                }
             }
+
+            isRendering = false;
         };
 
-        // Inicializar el visor de PDF
-        loadPDF();
+        pdfjsLib.getDocument(url).promise.then(async (pdf) => {
+            pdfDoc = pdf;
+
+            // Renderizar la primera página para dar feedback inmediato
+            await renderPage(1, 1);
+
+            // Configurar evento de scroll para renderizado bajo demanda
+            container.addEventListener('scroll', () => {
+                requestAnimationFrame(renderVisiblePages);
+            });
+
+            // Renderizar todas las páginas visibles cuando el documento esté listo
+            renderVisiblePages();
+        });
     </script>
 </body>
 </html>
